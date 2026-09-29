@@ -305,6 +305,9 @@ pub struct Resolved {
     pub arc_start: f32,
     pub arc_sweep: f32,
     pub arc_width: f32,
+    /// Horizontal shear in degrees about the transform origin, composed
+    /// between rotate and scale (spec.ts PROP.skewX).
+    pub skew_x: f32,
 }
 
 impl Default for Resolved {
@@ -368,6 +371,7 @@ impl Default for Resolved {
             arc_start: 0.0,
             arc_sweep: 0.0,
             arc_width: 0.0,
+            skew_x: 0.0,
         }
     }
 }
@@ -380,6 +384,7 @@ impl Resolved {
     /// don't count: TEXT_RUN places its box exactly under them.
     pub fn declares_transform(&self) -> bool {
         self.rotate != 0.0
+            || self.skew_x != 0.0
             || self.scale != 1.0
             || self.scale_x != 1.0
             || self.scale_y != 1.0
@@ -460,6 +465,7 @@ impl Resolved {
             p::ARC_START => self.arc_start = f,
             p::ARC_SWEEP => self.arc_sweep = f,
             p::ARC_WIDTH => self.arc_width = f,
+            p::SKEW_X => self.skew_x = f,
             _ => {}
         }
     }
@@ -536,6 +542,7 @@ impl Resolved {
             p::ARC_START => self.arc_start.to_bits(),
             p::ARC_SWEEP => self.arc_sweep.to_bits(),
             p::ARC_WIDTH => self.arc_width.to_bits(),
+            p::SKEW_X => self.skew_x.to_bits(),
             _ => 0,
         }
     }
@@ -576,9 +583,24 @@ pub fn resolve_z(node: &Node, table: &StyleTable) -> i32 {
 }
 
 /// Resolve a node's effective style. `with_anim` controls whether live
-/// animation values participate (they do for painting/"from = current"; they
-/// don't when computing a transition's target).
+/// animation values and the physics layer participate (they do for layout,
+/// painting and hit testing; they don't when computing a transition's
+/// target). Animation start values use `resolve_animated`, which leaves the
+/// physics layer out.
 pub fn resolve(node: &Node, table: &StyleTable, with_anim: bool) -> Resolved {
+    let mut r = resolve_animated(node, table, with_anim);
+    if with_anim {
+        for &(p, v) in &node.physics_values {
+            r.apply(p, v);
+        }
+    }
+    r
+}
+
+/// Style, overrides and (with `with_anim`) animation tracks, without the
+/// physics layer: the values animations and transitions start from, so a
+/// body's pose never leaks into a view's own animation state.
+pub fn resolve_animated(node: &Node, table: &StyleTable, with_anim: bool) -> Resolved {
     let mut r = Resolved::default();
     if let Some(rec) = table.record(node.style_id) {
         for &(p, v) in &rec.base {

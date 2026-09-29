@@ -226,6 +226,7 @@ pub extern "C" fn ui_shutdown() {
         UI = None;
         PAK_TEXTURES = Vec::new();
         PAK_SPRITES = Vec::new();
+        PHYSICS_EVENTS = Vec::new();
     }
     clear_draw_snapshot();
 }
@@ -335,6 +336,51 @@ pub extern "C" fn ui_set_prop_batch(ptr: *const u8, len: usize) {
             read_f64_le(record, 16),
         );
     }
+}
+
+// ---- physics (spec ops 52..56, ui.physics; contracts/spec/physics.ts) ------
+
+/// Drained physics events; valid until the next drain. The ARM11 runs
+/// little-endian, so the f64 storage is the wire's byte layout.
+static mut PHYSICS_EVENTS: Vec<f64> = Vec::new();
+const _: () = assert!(cfg!(target_endian = "little"));
+
+fn f64_records(ptr: *const u8, len: usize) -> Vec<f64> {
+    let (records, _) = unsafe { bytes(ptr, len) }.as_chunks::<8>();
+    records.iter().map(|record| f64::from_le_bytes(*record)).collect()
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_create(kind: u32, ptr: *const u8, len: usize) -> i32 {
+    ui().physics_create(kind, &f64_records(ptr, len))
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_apply(ptr: *const u8, len: usize) {
+    ui().physics_apply(&f64_records(ptr, len));
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_destroy(handle: i32) {
+    ui().physics_destroy(handle);
+}
+
+/// Drain pending events; returns the byte pointer and stores the byte length
+/// (0 when there are none).
+#[no_mangle]
+pub extern "C" fn ui_physics_take_events(length: *mut usize) -> *const u8 {
+    unsafe {
+        ui().physics_take_events(&mut PHYSICS_EVENTS);
+        if !length.is_null() {
+            *length = PHYSICS_EVENTS.len() * 8;
+        }
+        PHYSICS_EVENTS.as_ptr() as *const u8
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_query(query: u32, handle: i32, a: f64, b: f64, c: f64, d: f64) -> f64 {
+    ui().physics_query(query, handle, a, b, c, d)
 }
 
 #[no_mangle]

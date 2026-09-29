@@ -570,6 +570,14 @@ static void accept_guest(
   devserver_report_install("accepted", accepted_hash, "first PICA command list retired");
 }
 
+#if !defined(POCKETJS_CAPTURE) && !defined(POCKETJS_OFFLOAD)
+/* System ticks to microseconds, saturated to 32 bits. */
+static uint32_t ticks_to_us(u64 ticks) {
+  u64 us = ticks * 1000000 / SYSCLOCK_ARM11;
+  return us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+}
+#endif
+
 static void begin_frame_wait(uint32_t run_frame) {
 #ifdef POCKETJS_CAPTURE
   (void)run_frame;
@@ -885,6 +893,7 @@ int main(void) {
       1
     );
     if (hit_count != touch_count) fail("auxiliary touch hit resolution failed");
+    u64 phase_js __attribute__((unused)) = svcGetSystemTick();
     if (!qjs_frame(buttons, analog, &touch, &touch_hit, touch_count, right_analog)) {
 #if defined(POCKETJS_CAPTURE) || defined(POCKETJS_OFFLOAD)
       fail(qjs_last_error());
@@ -905,9 +914,12 @@ int main(void) {
     }
     /* Animations always advance at the fixed 1/60 timestep; this host
      * presents at the same rate, so it is one tick per frame. */
+    u64 phase_tick __attribute__((unused)) = svcGetSystemTick();
     ui_tick();
+    u64 phase_draw __attribute__((unused)) = svcGetSystemTick();
     size_t words = ui_draw();
     size_t auxiliary_words = ui_draw_auxiliary();
+    u64 phase_draw_end __attribute__((unused)) = svcGetSystemTick();
     const uint32_t *auxiliary_list = ui_draw_auxiliary_list_ptr();
 #ifndef POCKETJS_CAPTURE
     if (devmenu_visible()) {
@@ -930,6 +942,7 @@ int main(void) {
     accept_guest(&guest, &runtime_state, &failures, run_frame);
 #endif
     offload_cpu_start = svcGetSystemTick();
+    u64 phase_gpu __attribute__((unused)) = offload_cpu_start;
     gfx_begin_frame();
 #ifdef POCKETJS_MEDIA
     media_present();
@@ -974,6 +987,25 @@ int main(void) {
     C3D_FrameEnd(0);
     offload_measure((unsigned)((offload_ui_ticks + svcGetSystemTick() - offload_cpu_start) * 1000000 / SYSCLOCK_ARM11));
 #if !defined(POCKETJS_CAPTURE) && !defined(POCKETJS_OFFLOAD)
+    {
+      /* A frame interval is measured only between consecutive presented
+       * frames: a recovery or a reload advances run_frame by more than one,
+       * and the frame after it starts a fresh interval. */
+      static u64 previous_js;
+      static uint32_t previous_frame = UINT32_MAX;
+      u64 phase_end = svcGetSystemTick();
+      if (previous_frame != UINT32_MAX && run_frame == previous_frame + 1) {
+        devserver_set_frame_timing(
+          ticks_to_us(phase_tick - phase_js),
+          ticks_to_us(phase_draw - phase_tick),
+          ticks_to_us(phase_draw_end - phase_draw),
+          ticks_to_us(phase_end - phase_gpu),
+          ticks_to_us(phase_js - previous_js)
+        );
+      }
+      previous_js = phase_js;
+      previous_frame = run_frame;
+    }
     guest.submitted_frames += 1;
     devserver_set_frame_stats(
       run_frame,

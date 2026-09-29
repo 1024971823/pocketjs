@@ -6,11 +6,11 @@
 //! because the PSP GE wraps i16 coordinates. Clipping re-interpolates UVs
 //! (TEX_QUAD) and gradient endpoint colors (GRAD_RECT).
 //!
-//! Transforms (translate/scale/rotate) compose down the walk as 2D affines.
+//! Transforms (translate/rotate/skewX/scale) compose down the walk as 2D affines.
 //! Axis-aligned content uses RECT/GRAD_RECT/TEX_QUAD; ROTATED solid/gradient
 //! boxes are corner-transformed, Sutherland-Hodgman-clipped and emitted as
 //! TRI ops. v1 degradations (documented):
-//!   - rotated IMAGE quads are conservatively culled (no textured-tri op);
+//!   - rotated, skewed or mirrored IMAGE quads become clipped TEX_TRI fans;
 //!   - rotated glyph cells stay upright and unscaled; axis-aligned scales
 //!     use clipped, tinted atlas TEX_QUADs. Unscaled cells whose top-left leaves the
 //!     screen range or whose cell leaves the clip rect are dropped;
@@ -22,6 +22,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
+use crate::fmath::{cosf, sinf, sqrtf, tanf};
 use crate::layout::{floorf, roundf};
 use crate::spec;
 use crate::style::{self, StyleTable, NO_GRADIENT};
@@ -63,26 +64,6 @@ fn clampf(x: f32, lo: f32, hi: f32) -> f32 {
     } else {
         x
     }
-}
-
-/// sin for rotate: range-reduce to [-pi/2, pi/2], 5-term Taylor (max error
-/// well under a hundredth of a pixel at screen scale). Deterministic f32.
-fn sinf(x: f32) -> f32 {
-    // reduce to [-pi, pi]
-    let mut r = x - (2.0 * PI) * floorf((x + PI) / (2.0 * PI));
-    // fold into [-pi/2, pi/2]
-    if r > PI / 2.0 {
-        r = PI - r;
-    } else if r < -PI / 2.0 {
-        r = -PI - r;
-    }
-    let x2 = r * r;
-    r * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0)))))
-}
-
-#[inline]
-fn cosf(x: f32) -> f32 {
-    sinf(x + PI / 2.0)
 }
 
 /// Row-major 2D affine: p' = (a*x + c*y + tx, b*x + d*y + ty).
@@ -202,6 +183,12 @@ impl Mat34 {
 
     fn scale(sx: f32, sy: f32) -> Mat34 {
         Mat34 { m: [sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] }
+    }
+
+    fn skew_x(deg: f32) -> Mat34 {
+        let r = deg * (PI / 180.0);
+        let t = tanf(r);
+        Mat34 { m: [1.0, t, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] }
     }
 }
 
@@ -356,18 +343,6 @@ fn corner_color(fill: &Fill, corner: usize) -> u32 {
 
 fn lerp_color(a: u32, b: u32, f: f32) -> u32 {
     crate::anim::interp(a, b, f, true)
-}
-
-#[inline]
-fn sqrtf(x: f32) -> f32 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    let mut y = f32::from_bits((x.to_bits() >> 1) + 0x1fc0_0000);
-    y = 0.5 * (y + x / y);
-    y = 0.5 * (y + x / y);
-    y = 0.5 * (y + x / y);
-    y
 }
 
 #[inline]
@@ -734,7 +709,7 @@ fn pow2_at_least(n: u32) -> u32 {
 /// geometry can never drift from painted geometry.
 fn local_affine(l: &crate::tree::LayoutRect, r: &style::Resolved) -> Affine {
     let mut local = Affine::translate(l.x + r.translate_x, l.y + r.translate_y);
-    if r.rotate != 0.0 || r.scale != 1.0 || r.scale_x != 1.0 || r.scale_y != 1.0 {
+    if r.rotate != 0.0 || r.skew_x != 0.0 || r.scale != 1.0 || r.scale_x != 1.0 || r.scale_y != 1.0 {
         // Transform origin: node center offset by the origin fractions
         // (`origin-*` utilities; e.g. origin-bottom = (0, +0.5)).
         let (cx, cy) = (l.w * (0.5 + r.origin_x), l.h * (0.5 + r.origin_y));
@@ -743,16 +718,24 @@ fn local_affine(l: &crate::tree::LayoutRect, r: &style::Resolved) -> Affine {
         // few ulp off at multiples of pi/2, which would silently demote
         // scale-only transforms to the TRI path).
         let (s, c) = if r.rotate == 0.0 { (0.0, 1.0) } else { (sinf(rad), cosf(rad)) };
+        // skewX == 0 keeps the shear term exactly zero for the same reason.
+        let t = if r.skew_x == 0.0 {
+            0.0
+        } else {
+            tanf(r.skew_x * (PI / 180.0))
+        };
         let sx = r.scale * r.scale_x;
         let sy = r.scale * r.scale_y;
-        // translate(c) * rotate * scale * translate(-c)
+        // translate(c) * rotate * skewX * scale * translate(-c)
+        let (ma, mb) = (c * sx, s * sx);
+        let (mc, md) = (c * t * sy - s * sy, s * t * sy + c * sy);
         let m = Affine {
-            a: c * sx,
-            b: s * sx,
-            c: -s * sy,
-            d: c * sy,
-            tx: cx - (c * sx * cx - s * sy * cy),
-            ty: cy - (s * sx * cx + c * sy * cy),
+            a: ma,
+            b: mb,
+            c: mc,
+            d: md,
+            tx: cx - (ma * cx + mc * cy),
+            ty: cy - (mb * cx + md * cy),
         };
         local = local.then(&m);
     }
@@ -1524,8 +1507,8 @@ impl<'a> Walker<'a> {
         let l = node.layout;
         // Local matrix, canonical function order (matches the CSS transform
         // lists this models: translate/translateZ leftmost, then rotate,
-        // rotateX, rotateY, with 2D scale innermost), conjugated around the
-        // transform origin.
+        // rotateX, rotateY, skewX, with 2D scale innermost), conjugated
+        // around the transform origin.
         let (ox, oy) = (l.w * (0.5 + r.origin_x), l.h * (0.5 + r.origin_y));
         let mut local = Mat34::translate(l.x + r.translate_x, l.y + r.translate_y, r.translate_z)
             .then(&Mat34::translate(ox, oy, 0.0));
@@ -1537,6 +1520,9 @@ impl<'a> Walker<'a> {
         }
         if r.rotate_y != 0.0 {
             local = local.then(&Mat34::rot_y(r.rotate_y));
+        }
+        if r.skew_x != 0.0 {
+            local = local.then(&Mat34::skew_x(r.skew_x));
         }
         let (sx, sy) = (r.scale * r.scale_x, r.scale * r.scale_y);
         if sx != 1.0 || sy != 1.0 {

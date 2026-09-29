@@ -1,7 +1,7 @@
 //! pocketjs-core — the platform-agnostic retained UI core.
 //!
 //! One `Ui` instance owns the node tree, style table, taffy layout, font
-//! atlases, animation tracks and the per-frame `DrawList`. Hosts (PSP QuickJS
+//! atlases, animation tracks, physics worlds and the per-frame `DrawList`. Hosts (PSP QuickJS
 //! FFI, wasm extern "C" mirror) call the op surface below; nothing here knows
 //! about sceGu, canvas or QuickJS.
 //!
@@ -25,6 +25,13 @@
 //! the target); an EXPLICIT `animate()` track persists its final value as a
 //! dynamic override. `cancel_anim` freezes the current value as a dynamic
 //! override.
+//!
+//! Physics plumbing (ui.physics): `tick()` steps every world after the
+//! animation tracks, against current layout, and each body writes its pose
+//! into its views' `physics_values`. `style::resolve` applies that layer after
+//! `anim_values`; animation and transition start values read
+//! `style::resolve_animated`, which stops before it, so `animate()` and
+//! `cancel_anim` never capture a physics pose.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -40,9 +47,11 @@ pub mod anim;
 pub mod codec;
 pub mod damage;
 pub mod draw;
+mod fmath;
 pub mod layout;
 pub mod package;
 pub mod pak;
+pub mod physics;
 pub mod raster;
 pub mod compositor;
 pub mod spec;
@@ -253,6 +262,8 @@ pub struct Ui {
     font_revisions: [u64; spec::MAX_FONT_SLOTS],
     anims: anim::Anims,
     timelines: Vec<TimelineInst>,
+    /// 2D bodies (ui.physics): stepped after animations, writes view props.
+    physics: physics::Physics,
     layout: layout::LayoutEngine,
     auxiliary: Option<AuxiliarySurface>,
     /// Generation-tagged texture slots (handles per spec.ts TEX_SLOT_BITS).
@@ -343,6 +354,7 @@ impl Ui {
             font_revisions: [0; spec::MAX_FONT_SLOTS],
             anims: anim::Anims::new(),
             timelines: Vec::new(),
+            physics: physics::Physics::new(),
             layout: layout::LayoutEngine::new(),
             auxiliary: None,
             textures: Vec::new(),
@@ -552,7 +564,7 @@ impl Ui {
         let Some(slot) = self.tree.resolve(id) else {
             return;
         };
-        let old = style::resolve(&self.tree.slots[slot as usize], &self.styles, true);
+        let old = style::resolve_animated(&self.tree.slots[slot as usize], &self.styles, true);
         let was_initialized = self.tree.slots[slot as usize].style_initialized;
         {
             let node = &mut self.tree.slots[slot as usize];
@@ -1028,7 +1040,7 @@ impl Ui {
         let kind = spec::PROP_VALUE_KIND[prop as usize];
         let is_color = kind == spec::value_kind::COLOR;
         let from =
-            style::resolve(&self.tree.slots[slot as usize], &self.styles, true).get_bits(prop);
+            style::resolve_animated(&self.tree.slots[slot as usize], &self.styles, true).get_bits(prop);
         let to_bits = prop_bits(kind, to);
         let nid = self.tree.slots[slot as usize].id(slot);
         if !is_color {
@@ -1117,13 +1129,13 @@ impl Ui {
         let old_focused = self.focused;
         self.focused = target;
         if let Some(slot) = self.tree.resolve(old_focused) {
-            let old = style::resolve(&self.tree.slots[slot as usize], &self.styles, true);
+            let old = style::resolve_animated(&self.tree.slots[slot as usize], &self.styles, true);
             self.tree.slots[slot as usize].focused = false;
             self.retarget(slot, &old, true);
             self.mark_layout_style(slot);
         }
         if let Some(slot) = self.tree.resolve(target) {
-            let old = style::resolve(&self.tree.slots[slot as usize], &self.styles, true);
+            let old = style::resolve_animated(&self.tree.slots[slot as usize], &self.styles, true);
             self.tree.slots[slot as usize].focused = true;
             self.retarget(slot, &old, true);
             self.mark_layout_style(slot);
@@ -1151,7 +1163,7 @@ impl Ui {
             self.tree.slots[slot as usize].active = active;
             return;
         }
-        let old = style::resolve(&self.tree.slots[slot as usize], &self.styles, true);
+        let old = style::resolve_animated(&self.tree.slots[slot as usize], &self.styles, true);
         self.tree.slots[slot as usize].active = active;
         self.retarget(slot, &old, true);
         self.mark_layout_style(slot);
@@ -1285,8 +1297,8 @@ impl Ui {
     // ---- frame -------------------------------------------------------------
 
     /// Advance one frame: tick animations by exactly one `set_tick_rate`
-    /// step, then re-run layout if dirty. Call once per vblank, BEFORE
-    /// `draw()`.
+    /// step, step physics worlds against current layout, then re-run layout
+    /// if dirty. Call once per vblank, BEFORE `draw()`.
     pub fn tick(&mut self) {
         self.ticked = true;
         if self.paused {
@@ -1335,9 +1347,60 @@ impl Ui {
         }
         self.anims.publish_completions();
         self.tick_timelines();
+        if !self.physics.is_idle() {
+            // Anchors and node colliders read layout, so it must be current.
+            if self.layout.needs() {
+                layout::relayout(&mut self.tree, &self.styles, &self.fonts, &mut self.layout);
+            }
+            if let Some(auxiliary) = self.auxiliary.as_mut() {
+                if auxiliary.layout.needs() {
+                    layout::relayout_root(
+                        &mut self.tree,
+                        &self.styles,
+                        &self.fonts,
+                        &mut auxiliary.layout,
+                        auxiliary.root,
+                    );
+                }
+            }
+            let aux_root = self.auxiliary_surface_root();
+            self.physics.step(self.dt, &mut self.tree, aux_root);
+        }
         if self.layout.needs() {
             layout::relayout(&mut self.tree, &self.styles, &self.fonts, &mut self.layout);
         }
+    }
+
+    // ---- physics (ui.physics; contracts/spec/physics.ts) ----------------------
+
+    /// `physicsCreate(kind, params)` → handle, or 0.
+    pub fn physics_create(&mut self, kind: u32, params: &[f64]) -> i32 {
+        self.physics.create(kind, params)
+    }
+
+    /// `physicsApply(records)`.
+    pub fn physics_apply(&mut self, records: &[f64]) {
+        self.physics.apply(records);
+    }
+
+    /// `physicsDestroy(handle)`.
+    pub fn physics_destroy(&mut self, handle: i32) {
+        self.physics.destroy(handle, &mut self.tree);
+    }
+
+    /// `physicsEvents()`: move the pending records into `out`.
+    pub fn physics_take_events(&mut self, out: &mut Vec<f64>) {
+        self.physics.take_events(out);
+    }
+
+    /// Whether `physicsEvents()` would return records.
+    pub fn physics_has_events(&self) -> bool {
+        self.physics.has_events()
+    }
+
+    /// `physicsQuery(query, handle, a, b, c, d)`.
+    pub fn physics_query(&self, query: u32, handle: i32, a: f64, b: f64, c: f64, d: f64) -> f64 {
+        self.physics.query(query, handle, a, b, c, d)
     }
 
     /// Advance every playing baked timeline one frame and write the sampled

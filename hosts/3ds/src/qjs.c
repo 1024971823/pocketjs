@@ -94,6 +94,11 @@ typedef enum {
   HostSvcOpen,
   HostSvcPoll,
   HostSvcSend,
+  HostPhysicsCreate,
+  HostPhysicsApply,
+  HostPhysicsDestroy,
+  HostPhysicsEvents,
+  HostPhysicsQuery,
 } HostOperation;
 
 static JSRuntime *runtime;
@@ -175,6 +180,12 @@ static double argument_float(JSContext *ctx, int argc, JSValueConst *argv, int i
   double value = 0.0;
   if (index < argc) JS_ToFloat64(ctx, &value, argv[index]);
   return value;
+}
+
+/* An optional number: missing or undefined reads as 0, as in the wasm host. */
+static double argument_optional_float(JSContext *ctx, int argc, JSValueConst *argv, int index) {
+  if (index >= argc || JS_IsUndefined(argv[index])) return 0.0;
+  return argument_float(ctx, argc, argv, index);
 }
 
 /*
@@ -293,6 +304,38 @@ static JSValue host_operation(
         ui_set_prop_batch(bytes, byte_length);
       }
       return JS_UNDEFINED;
+    case HostPhysicsCreate: {
+      /* convert first: a conversion may allocate and move the borrowed bytes */
+      uint32_t kind = (uint32_t)argument_int(ctx, argc, argv, 0);
+      if (!argument_bytes(ctx, argc, argv, 1, &bytes, &byte_length)) return JS_NewInt32(ctx, 0);
+      return JS_NewInt32(ctx, ui_physics_create(kind, bytes, byte_length));
+    }
+    case HostPhysicsApply:
+      if (argument_bytes(ctx, argc, argv, 0, &bytes, &byte_length)) {
+        ui_physics_apply(bytes, byte_length);
+      }
+      return JS_UNDEFINED;
+    case HostPhysicsDestroy:
+      ui_physics_destroy(argument_int(ctx, argc, argv, 0));
+      return JS_UNDEFINED;
+    case HostPhysicsEvents: {
+      size_t length = 0;
+      const uint8_t *events = ui_physics_take_events(&length);
+      if (length == 0) return JS_UNDEFINED;
+      return JS_NewArrayBufferCopy(ctx, events, length);
+    }
+    case HostPhysicsQuery:
+      return JS_NewFloat64(
+        ctx,
+        ui_physics_query(
+          (uint32_t)argument_int(ctx, argc, argv, 0),
+          argument_int(ctx, argc, argv, 1),
+          argument_optional_float(ctx, argc, argv, 2),
+          argument_optional_float(ctx, argc, argv, 3),
+          argument_optional_float(ctx, argc, argv, 4),
+          argument_optional_float(ctx, argc, argv, 5)
+        )
+      );
     case HostSetText:
     case HostReplaceText: {
       if (argc < 2) return JS_UNDEFINED;
@@ -658,6 +701,12 @@ static void install_host(void) {
   add_operation(ui, "svcOpen", 1, HostSvcOpen);
   add_operation(ui, "svcPoll", 0, HostSvcPoll);
   add_operation(ui, "svcSend", 1, HostSvcSend);
+  /* 2D bodies (spec ops 52..56, ui.physics). */
+  add_operation(ui, "physicsCreate", 2, HostPhysicsCreate);
+  add_operation(ui, "physicsApply", 1, HostPhysicsApply);
+  add_operation(ui, "physicsDestroy", 1, HostPhysicsDestroy);
+  add_operation(ui, "physicsEvents", 0, HostPhysicsEvents);
+  add_operation(ui, "physicsQuery", 6, HostPhysicsQuery);
 
   /* Framework-owned host identity, from the build's -D defines rather than
    * literals that can drift. Bundles refuse to mount when they disagree. */
