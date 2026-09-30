@@ -24,7 +24,7 @@ import {
   symbianDataBaseForEmbeddedBytes,
   symbianPackageIdentity,
 } from "./symbian-package.ts";
-import { resolveSymbianE7BuildPlan } from "./symbian-profile.ts";
+import { resolveSymbianE7BuildPlan, symbianE7Orientation } from "./symbian-profile.ts";
 import {
   SYMBIAN_DOWNLOADS,
   SYMBIAN_RUNTIME_DOWNLOADS,
@@ -111,8 +111,12 @@ async function dockerImageReady(): Promise<boolean> {
       `${SYMBIAN_TOOLCHAIN.toolchainVersion} ${implementation}`;
 }
 
+/** A CODA request after the handshake: start an installed executable, or
+ *  install a SIS staged in the phone's Installs folder. */
+type CodaAction = { readonly kind: "launch" | "install"; readonly target: string };
+
 async function runCodaUsbProbe(
-  executable?: string,
+  action?: CodaAction,
 ): Promise<CommandResult> {
   const compiler = Bun.which("cc");
   const pkgConfig = Bun.which("pkg-config");
@@ -172,14 +176,16 @@ async function runCodaUsbProbe(
       pocketStackCacheRoot(),
       "symbian/.locks/coda-usb-device.lock",
     );
+    // a silent install unpacks and registers the whole package on the phone
+    const timeoutMs = action?.kind === "install" ? 200_000 : 45_000;
     return await withArtifactLock(
       lock,
       () => spawn(
         binary,
-        executable !== undefined ? ["launch", executable] : [],
-        { timeoutMs: 45_000 },
+        action ? [action.kind, action.target] : [],
+        { timeoutMs },
       ),
-      { timeoutMs: 45_000, staleMs: 2 * 60_000 },
+      { timeoutMs, staleMs: 2 * 60_000 + timeoutMs },
     );
   } finally {
     rmSync(build, { recursive: true, force: true });
@@ -413,9 +419,10 @@ export async function buildApp(
   const manifest = JSON.parse(readFileSync(absoluteManifest, "utf8")) as unknown;
   const plan = resolveSymbianE7BuildPlan(manifest);
   const packageIdentity = symbianPackageIdentity(plan, options.uid);
-  const navigation = options.navigation === undefined ? "" : encodeSymbianNavigation(
+  const navigation = options.navigation === undefined ? undefined : encodeSymbianNavigation(
     JSON.parse(readFileSync(resolve(options.navigation), "utf8")), packageIdentity.uid);
   if (navigation && options.catalogIndex) throw new Error("Native navigation and an embedded catalog are separate launch modes");
+  const orientation = symbianE7Orientation(manifest, plan, navigation?.orientation);
   const manifestRelativeToPocketJs = relative(root, absoluteManifest);
   const defaultProjectRoot =
     manifestRelativeToPocketJs !== ".." &&
@@ -529,7 +536,7 @@ export async function buildApp(
       copyFileSync(catalogIndex, resolve(payload, "catalog.tsv"));
       copyFileSync(catalogBlob, resolve(payload, "catalog.bin"));
     }
-    await Bun.write(resolve(payload, "navigation.tsv"), navigation);
+    await Bun.write(resolve(payload, "navigation.tsv"), navigation?.table ?? "");
     const embeddedPaths = [
       resolve(payload, "navigation.tsv"),
       resolve(payload, "app.js"),
@@ -594,6 +601,8 @@ export async function buildApp(
         String(embeddedBytes),
         String(frameRate),
         options.perfTrace ? "1" : "0",
+        orientation,
+        plan.features["ui.physics"] ? "1" : "0",
       ],
       {
         repository: root,
@@ -639,7 +648,7 @@ async function deploy(path: string): Promise<void> {
   console.log(`  file: ${result.localName}`);
   console.log(`  destination: ${SYMBIAN_TOOLCHAIN.device.deployStorage}/${SYMBIAN_TOOLCHAIN.device.deployFolder}`);
   console.log(`  SHA-256: ${result.sha256}`);
-  console.log("  copied and read back byte-for-byte; installation still requires confirmation on the E7");
+  console.log("  copied and read back byte-for-byte; install it on the E7 or with `coda usb install`");
 }
 
 const HELP = `PocketJS Nokia E7 / Symbian toolchain
@@ -659,6 +668,8 @@ const HELP = `PocketJS Nokia E7 / Symbian toolchain
   pocket symbian coda usb           run the CODA USB ping + Locator handshake
   pocket symbian coda usb launch <executable.exe>
                                     remotely launch an installed app from its receipt
+  pocket symbian coda usb install <package.sis>
+                                    install a SIS that deploy staged in Installs, no prompts
 `;
 
 export async function symbianMain(
@@ -725,35 +736,21 @@ export async function symbianMain(
       await deploy(args[1]);
       break;
     case "coda": {
-      if (args[1] !== "usb") throw new Error("usage: pocket symbian coda usb");
-      const action = args[2];
-      if (action !== undefined && action !== "launch") {
-        throw new Error(
-          "usage: pocket symbian coda usb [launch [executable.exe]]",
-        );
-      }
-      if (args.length > (action === "launch" ? 4 : 2)) {
-        throw new Error(
-          "usage: pocket symbian coda usb [launch [executable.exe]]",
-        );
-      }
-      const launchRequested = action === "launch";
-      const executable = launchRequested
-        ? args[3]
-        : undefined;
-      if (launchRequested && !executable) {
-        throw new Error(
-          "usage: pocket symbian coda usb launch <executable.exe>",
-        );
-      }
-      const coda = await runCodaUsbProbe(executable);
+      const usage = "usage: pocket symbian coda usb [launch <executable.exe> | install <package.sis>]";
+      if (args[1] !== "usb") throw new Error(usage);
+      const kind = args[2];
+      if (kind !== undefined && kind !== "launch" && kind !== "install") throw new Error(usage);
+      if (args.length !== (kind === undefined ? 2 : 4)) throw new Error(usage);
+      const coda = await runCodaUsbProbe(kind === undefined ? undefined : { kind, target: args[3] });
       if (coda.stdout) process.stdout.write(sanitizeDeviceOutput(coda.stdout));
       if (coda.stderr) process.stderr.write(sanitizeDeviceOutput(coda.stderr));
       if (coda.exitCode !== 0) {
         throw new Error(
-          launchRequested
+          kind === "launch"
             ? "CODA USB launch failed"
-            : "CODA USB handshake failed",
+            : kind === "install"
+              ? "CODA USB install failed"
+              : "CODA USB handshake failed",
         );
       }
       break;
