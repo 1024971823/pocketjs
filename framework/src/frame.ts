@@ -11,6 +11,7 @@ import { __beginMotionFrame, __endMotionFrame, __motionReader, __resetMotionInpu
 import type { i32 } from "./numeric-microts.ts";
 import type { NodeMirror } from "./native-tree.ts";
 import type { DeferredPress } from "./input.ts";
+import { dispatchFrame, FrameRegistry, type FrameCallback, type RunPress } from "./frame-dispatch.ts";
 import { RowContext, nodeRow, withRowSnapshot } from "./solid-row.ts";
 import { flushLifecycleHooks, resetLifecycleHooks } from "./lifecycle-solid-aot.ts";
 import { reactModelRegions } from "./model-reactive.ts";
@@ -19,16 +20,15 @@ import { pollModelAnimations } from "./model-animation.ts";
 
 export { __setAnalog, analogRaw, analogX, analogY, rightAnalogRaw, rightAnalogX, rightAnalogY } from "./analog.ts";
 
-type FrameCallback = (buttons: number) => void;
-
-const callbacks = new Set<FrameCallback>();
-const placedCallbacks = new Map<FrameCallback, NodeMirror>();
+const registry = new FrameRegistry();
 let buttonHandlerBlockDepth = 0;
+
+/** Deferred presses run inside the list row their node was created in. */
+const runInRow: RunPress = (node, invoke) => withRowSnapshot(nodeRow(node), invoke);
 
 export function resetFrameHooks(): void {
   resetModelTaskClock();
-  callbacks.clear();
-  placedCallbacks.clear();
+  registry.clear();
   buttonHandlerBlockDepth = 0;
   __resetAnalog();
   __resetAxisInput();
@@ -40,35 +40,10 @@ export function runFrameHooks(buttons: number, axisDeltas?: readonly AxisDelta[]
   __beginAxisFrame(axisDeltas);
   try {
     __beginMotionFrame(motion);
-    // Freeze registration before any callback can mount another handler.
-    const frameCallbacks = [...callbacks];
-    const placed = [...placedCallbacks];
+    const frame = registry.freeze();
     batch(() => {
       pollModelAnimations(); resumeModelTasks();
-      const pending = new Map<NodeMirror, (() => void)[]>();
-      const enqueue: DeferredPress = (node, invoke) => {
-        const entries = pending.get(node);
-        if (entries) entries.push(invoke);
-        else pending.set(node, [invoke]);
-      };
-      beforeHooks?.(enqueue);
-      for (const cb of frameCallbacks) cb(buttons);
-      for (const [callback, node] of placed) enqueue(node, () => callback(buttons));
-      resolveInput?.(enqueue);
-      const roots = new Set<NodeMirror>();
-      for (const node of pending.keys()) {
-        if (!(node as NodeMirror & { readonly isConnected: boolean }).isConnected) continue;
-        let root = node;
-        while (root.parent) root = root.parent;
-        roots.add(root);
-      }
-      const ordered: { node: NodeMirror; invoke: () => void }[] = [];
-      const collect = (node: NodeMirror): void => {
-        for (const invoke of pending.get(node) ?? []) ordered.push({ node, invoke });
-        for (const child of node.children) collect(child);
-      };
-      for (const root of roots) collect(root);
-      for (const { node, invoke } of ordered) withRowSnapshot(nodeRow(node), invoke);
+      dispatchFrame(frame, buttons, runInRow, beforeHooks, resolveInput);
       reactModelRegions();
     });
     flushLifecycleHooks();
@@ -77,10 +52,15 @@ export function runFrameHooks(buttons: number, axisDeltas?: readonly AxisDelta[]
 
 function registerFrame(callback: FrameCallback, placement?: NodeMirror): () => void {
   const row = useContext(RowContext);
-  const wrapped: FrameCallback = placement ? callback : buttons => withRowSnapshot(row, () => callback(buttons));
-  if (placement) placedCallbacks.set(wrapped, placement);
-  else callbacks.add(wrapped);
-  const dispose = () => { callbacks.delete(wrapped); placedCallbacks.delete(wrapped); };
+  // Outside a list row there is no snapshot to take, so the wrapper calls
+  // straight through instead of allocating a closure every frame. It stays a
+  // distinct function so registering one callback twice still runs it twice.
+  const wrapped: FrameCallback = placement
+    ? callback
+    : row
+      ? buttons => withRowSnapshot(row, () => callback(buttons))
+      : buttons => callback(buttons);
+  const dispose = registry.add(wrapped, placement);
   onCleanup(dispose);
   return dispose;
 }

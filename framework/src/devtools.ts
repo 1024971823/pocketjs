@@ -25,6 +25,10 @@ export interface DevtoolsTransport {
   recv(): string | null | undefined;
   /** Poll cadence in frames (PSP mailbox IO is a few USB round trips). */
   everyFrames?: number;
+  /** Whether a panel is attached now. Absent means always. While it returns
+   *  false the shim sends no tree or stats snapshots and no console lines;
+   *  the first frame after a panel attaches sends the tree. */
+  listening?: () => boolean;
 }
 
 /** Input tape: the complete session input, RLE-encoded (docs/DEVTOOLS.md §4). */
@@ -116,6 +120,8 @@ interface DevtoolsState {
   treeDirty: boolean;
   treeSentAt: number;
   saidHello: boolean;
+  /** A panel was listening after the previous frame (see `listening`). */
+  panelAttached: boolean;
   /** Wrapper invocations — advances even while paused (poll cadence must
    *  not freeze with the world, or resume could never arrive on PSP). */
   hostCalls: number;
@@ -151,6 +157,7 @@ const state: DevtoolsState = {
   treeDirty: true,
   treeSentAt: -TREE_THROTTLE,
   saidHello: false,
+  panelAttached: false,
   hostCalls: 0,
 };
 
@@ -194,6 +201,7 @@ export function initDevtools(ops: HostOps): void {
   state.treeDirty = true;
   state.treeSentAt = -TREE_THROTTLE;
   state.saidHello = false;
+  state.panelAttached = false;
   state.hostCalls = 0;
   state.app = (globalThis as { __pocketApp?: string }).__pocketApp;
 
@@ -206,6 +214,7 @@ export function initDevtools(ops: HostOps): void {
       send: (l) => ops.__dbgSend!(l),
       recv: () => ops.__dbgPoll!(),
       everyFrames: 10,
+      listening: ops.__dbgConnected ? () => ops.__dbgConnected!() : undefined,
     };
   } else {
     state.transport = null;
@@ -659,7 +668,23 @@ function handleMessage(line: string): void {
   }
 }
 
+/** False while the transport reports that no panel is attached. */
+function panelListening(): boolean {
+  const listening = state.transport?.listening;
+  return !listening || listening();
+}
+
 function afterFrame(): void {
+  if (!panelListening()) {
+    state.panelAttached = false;
+    return;
+  }
+  if (!state.panelAttached) {
+    // A panel that just attached has no tree yet, changed or not.
+    state.panelAttached = true;
+    state.treeDirty = true;
+    state.treeSentAt = -TREE_THROTTLE;
+  }
   if (state.treeDirty && state.frame - state.treeSentAt >= TREE_THROTTLE) {
     sendTree();
   }
@@ -816,18 +841,32 @@ function bridgeConsole(): void {
   // stub only ships with the Vue Vapor entry. With a transport attached the
   // channel IS the console, so create one from scratch.
   if (!g.console) g.console = {};
-  const c = g.console;
-  if ((c as { __pocketBridged?: boolean }).__pocketBridged) return;
-  (c as { __pocketBridged?: boolean }).__pocketBridged = true;
+  const c = g.console as Record<string, (...a: unknown[]) => void> & { __pocketBridge?: { current: ConsoleBridge } };
+  const bridge: ConsoleBridge = { send, listening: panelListening };
+  // The console is realm-global, but a realm can evaluate a second bundle
+  // with its own shim (the sim, tests): the newest shim with a transport takes
+  // the mirror over instead of wrapping the console twice.
+  if (c.__pocketBridge) {
+    c.__pocketBridge.current = bridge;
+    return;
+  }
+  const holder = { current: bridge };
+  c.__pocketBridge = holder;
   for (const level of ["log", "warn", "error"] as const) {
     const original = c[level];
     c[level] = (...args: unknown[]) => {
-      send({ t: "log", level, args: args.map((a) => fmt(a)) });
+      if (holder.current.listening()) holder.current.send({ t: "log", level, args: args.map((a) => fmt(a)) });
       // On PSP the original is prelude.ts's no-op stub; elsewhere keep the
       // native console working too.
       original?.apply(c, args);
     };
   }
+}
+
+/** The shim instance that receives mirrored console lines. */
+interface ConsoleBridge {
+  send(msg: unknown): void;
+  listening(): boolean;
 }
 
 /** Depth/size-capped repr for eval results and console args. */
