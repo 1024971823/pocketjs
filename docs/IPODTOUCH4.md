@@ -9,9 +9,16 @@ protocol — the op table, the frame entry, the embedded `__pocket_js` /
 `__pocket_pak` sections — is the same runtime compiled for the same
 architecture. The target remains outside the public `POCKET_TARGETS` registry.
 
-The bundled application is Pocket Clear (`apps/clear`), a Vue Vapor guest
-whose input is entirely gestures; its acceptance receipt is the
-`clear_gesture` action counter.
+The target builds two applications from this repository, selected with
+`POCKETJS_IPODTOUCH4_APP`:
+
+| App | Id | Guest | Acceptance action |
+|---|---|---|---|
+| Pocket Clear | `clear` (default) | `apps/clear`, Vue Vapor, gestures only | `clear_gesture` |
+| Pocket Nexus | `nexus-touch` | `apps/nexus-touch`, Solid, `ui.physics` | `nexus_play` |
+
+Each app has its own bundle identifier, executable, bundle name and URL
+scheme, so both install side by side.
 
 Clear also supports **companion-backed Chinese pinyin composition** through
 `io.offload`. The device owns the editor and a bounded input transcript; a
@@ -30,6 +37,48 @@ entry is `pocket_runtime_frame_contacts`, which packs every contact into the
 wide form above. A single id-0 contact produces the same bytes as the old
 single-touch entry points, so existing tapes and hosts decode unchanged. The
 1.x GSEvent fallback has no per-finger identity and owns slot 0 alone.
+
+## Frame rate
+
+**The display link fires at 60 Hz, the rate of the guest clock (`__simHz`),
+and `hosts/ipodtouch4/runtime.c` advances the core one tick per callback.**
+Animations, baked keyframes and physics therefore run at the durations the
+guest authored, in step with its `after()` timers. The shared legacy runtime
+keeps its default of two ticks per callback for the original iPhone, which
+presents at 30 Hz. Before this rate was set in the iPod wrapper, core motion
+on this target ran at twice its authored speed.
+
+## Pocket Nexus and 2D bodies
+
+`apps/nexus-touch` is the pocket.nexus homepage as a standalone app: the
+spill, the toys, and letters that hop, talk, and go back to the pocket's
+mouth. It shares its bodies, toys and bake with the 3DS scene in
+`apps/nexus` (`homepage.ts`, `toys.ts`, `bake.ts`).
+
+**The profile advertises `ui.physics`. For an app whose plan resolves it,
+the build compiles `engine/quickjs-c/pocket_runtime.c` with
+`POCKET_PHYSICS`, which binds ops 52..56 to the `ui_physics_*` exports of
+the UI C ABI (`engine/ui-cabi`).** Other apps, and the other hosts that
+compile the same runtime (iPhone 2G, iPhone 4S, Meizu M8, BlackBerry
+Classic, Android), keep their op tables byte-identical. The host ABI stays 8:
+the family is optional behind its capability, as `io.offload` is, and the
+guest is embedded in the same binary as the host.
+
+Measured on the device (`iPod4,1`, iOS 6.1.6) with the status record's window
+counters: 60 fps at rest with 1.4 ms of guest and core time per frame, and 57
+to 61 fps with 3.5 to 4.3 ms under a sustained load of a pop every 0.3 s, 14
+live toys, bursts, waves and swallowed letters.
+
+The app descriptor names an icon (`site/nexus/public/apple-touch-icon.png`)
+and a launch image (`apps/nexus-touch/launch.png`, the app's first frame),
+which replaces the generated `Default@2x.png`.
+
+```sh
+bun apps/nexus-touch/gen-art.ts                       # re-bake the art from the homepage
+POCKETJS_IPODTOUCH4_APP=nexus-touch bun ipodtouch4 build
+POCKETJS_IPODTOUCH4_APP=nexus-touch bun ipodtouch4 deploy
+POCKETJS_IPODTOUCH4_APP=nexus-touch bun ipodtouch4 launch
+```
 
 ## Device state
 
@@ -86,14 +135,15 @@ bun ipodtouch4 capture
 bun ipodtouch4 uninstall         # removes the app and its data
 ```
 
-`build` resolves `apps/clear/pocket.json` against the `ipodtouch4-dev`
-profile, produces the guest bundle and pak, compiles the shared legacy
+`build` resolves the selected app's manifest (`apps/clear/pocket.json` by
+default) against the `ipodtouch4-dev` profile, produces the guest bundle and pak, compiles the shared legacy
 runtime for `armv7-apple-ios6.0`, and links a `-no_pie` Mach-O with the app
 embedded as `__pocket_js` / `__pocket_pak` sections. The build id hashes the
 plan, the guest artifacts, every native object, the sysroot stubs, and the
 baked artwork.
 
-**`build` also produces `dist/ipodtouch4/PocketJSiPodTouch4.ipa`.** `deploy`
+**`build` also produces the app's IPA, `dist/ipodtouch4/PocketJSiPodTouch4.ipa`
+for Clear and `dist/ipodtouch4/PocketNexus.ipa` for Nexus.** `deploy`
 transfers that IPA over the pinned USB SSH tunnel and calls iOS 6
 `MobileInstallationInstall` with `ApplicationType=User`. **iOS creates the
 UUID container under `/var/mobile/Applications`, owns updates, and preserves
@@ -125,8 +175,9 @@ its receipts and captures inside that container. **`status` reads
 `<container>/tmp/pocketjs.status` twice** and
 requires the running build id, an advancing frame counter and heartbeat, and
 the GLES1 640×960 density-2 drawable. With `--require-action` it additionally
-requires at least one completed touch sequence and a reported `clear_gesture`
-action — a receipt that a gesture interaction completed on the hardware.
+requires at least one completed touch sequence and a reported action under
+the app's action name (`clear_gesture`, `nexus_play`) — a receipt that an
+interaction completed on the hardware.
 
 `capture` asks the running app for a raw RGBA frame and converts it to
 `dist/ipodtouch4/device-frame.png`.
@@ -135,8 +186,8 @@ User application icons use **opaque 57×57 and 114×114 artwork**. SpringBoard a
 
 ## Native application extensions
 
-External app descriptors may supply `nativeCore`, `assets`, and `icon`, resolved
-against `projectRoot`:
+External app descriptors may supply `nativeCore`, `assets`, `icon` and
+`launch`, resolved against `projectRoot`:
 
 ```json
 {
@@ -147,7 +198,8 @@ against `projectRoot`:
     "sources": ["hosts/ipod/bridge.c"]
   },
   "assets": ".pocket/ipod/assets",
-  "icon": "assets/app-icon.png"
+  "icon": "assets/app-icon.png",
+  "launch": "assets/launch.png"
 }
 ```
 
@@ -164,15 +216,16 @@ The optional graphics tail releases GPU resources when the context shuts
 down; it must retain guest and simulation state and recreate GPU resources
 on the next render. Final shutdown runs before QuickJS context destruction.
 The supplied `gl_context_current` flag determines whether the extension may
-issue GL deletion calls or must abandon handles. Native application builds
-advance one UI tick per display-link callback; stock Clear retains its two
-UI ticks per callback.
+issue GL deletion calls or must abandon handles. Every app on this target
+advances one UI tick per display-link callback (see Frame rate).
 
 **Nested asset files participate in both build identity and installed-byte
 verification.** Symlinks, unsupported filenames and replacements for generated
 bundle content are rejected. The icon is baked into opaque 57- and 114-pixel
-User artwork. Keep the app's bundle identifier, executable, bundle name and
-URL scheme distinct from installed applications.
+User artwork. `launch`, an opaque 640×960 PNG, replaces the generated
+`Default@2x.png`; the 4-inch `Default-568h@2x.png` repeats its bottom row
+below it. Keep the app's bundle identifier, executable, bundle name and URL
+scheme distinct from installed applications.
 
 UIKit touch callbacks carry up to eight contacts. Host receipts include
 `touch_max_contacts`, `uikit_touch_events` and `legacy_touch_events` to

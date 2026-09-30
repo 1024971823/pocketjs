@@ -97,6 +97,10 @@ export interface IPodTouch4App {
   /** Bundle-relative resources; every file participates in installation readback. */
   readonly assets?: string;
   readonly icon?: string;
+  /** Opaque 640x960 launch image (the app's first frame); replaces the
+   *  generated Default@2x.png, and fills Default-568h@2x.png with its
+   *  bottom row stretched below it. */
+  readonly launch?: string;
 }
 
 /** The fields an external app's descriptor file must carry. */
@@ -125,6 +129,21 @@ export const IPODTOUCH4_APPS: Readonly<Record<string, IPodTouch4App>> = {
     actionName: ACTION_NAME,
     svcWire: false,
     keepAwake: true,
+  },
+  "nexus-touch": {
+    id: "nexus-touch",
+    manifest: "apps/nexus-touch/pocket.json",
+    bundleId: "dev.pocket-stack.nexus-touch",
+    bundleName: "PocketNexus.app",
+    executable: "PocketNexus",
+    title: "Pocket Nexus",
+    scheme: "pocketjs-nexus",
+    receiptSlug: "pocketjs-nexus",
+    actionName: "nexus_play",
+    svcWire: false,
+    keepAwake: true,
+    icon: "site/nexus/public/apple-touch-icon.png",
+    launch: "apps/nexus-touch/launch.png",
   },
 };
 
@@ -162,7 +181,7 @@ export function readExternalIPodTouch4App(descriptorPath: string): IPodTouch4App
       throw new Error(`pocket ipodtouch4: invalid nativeCore in ${file}`);
     nativeCore = core as unknown as IPodTouch4App["nativeCore"];
   }
-  for (const key of ["assets", "icon"] as const)
+  for (const key of ["assets", "icon", "launch"] as const)
     if (parsed[key] !== undefined && (typeof parsed[key] !== "string" || !existsSync(resolvePath(root, parsed[key] as string))))
       throw new Error(`pocket ipodtouch4: invalid ${key} in ${file}`);
   return {
@@ -181,7 +200,18 @@ export function readExternalIPodTouch4App(descriptorPath: string): IPodTouch4App
     nativeCore,
     assets: parsed.assets as string | undefined,
     icon: parsed.icon as string | undefined,
+    launch: parsed.launch as string | undefined,
   };
+}
+
+/**
+ * Optional op families compiled into engine/quickjs-c/pocket_runtime.c for a
+ * resolved plan: ops 52..56 only for an app whose plan resolved ui.physics,
+ * so every other app keeps the op table, and the core archive, it was built
+ * against.
+ */
+export function guestRuntimeDefines(features: Readonly<Record<string, boolean>>): string[] {
+  return features["ui.physics"] ? ["-DPOCKET_PHYSICS"] : [];
 }
 
 export function selectIPodTouch4App(name: string | undefined, descriptor?: string): IPodTouch4App {
@@ -713,7 +743,7 @@ async function build(): Promise<void> {
   mkdirSync(bundle, { recursive: true });
   writeFileSync(join(bundle, "Info.plist"), renderInfoPlist());
   cpSync(join(REPOSITORY, "hosts/ipodtouch4/PkgInfo"), join(bundle, "PkgInfo"));
-  await bakeClassicIPhoneArtwork(bundle, "User");
+  await bakeClassicIPhoneArtwork(bundle, "User", APP.launch ? resolvePath(APP_ROOT, APP.launch) : undefined);
   if (APP.assets) stageIPodAssets(resolvePath(APP_ROOT, APP.assets), bundle, EXECUTABLE);
   if (APP.icon) {
     const { loadImage } = await import("@napi-rs/canvas");
@@ -725,10 +755,8 @@ async function build(): Promise<void> {
       writeFileSync(join(bundle, name), icon.toBuffer("image/png"));
     }
   }
-
   const firstParty = [
     ...warnings,
-    ...(APP.nativeCore ? ["-DPOCKET_FRAME_TICKS=1"] : []),
     `-DPOCKET_LOGICAL_WIDTH=${inputs.viewport.logical[0]}`,
     `-DPOCKET_LOGICAL_HEIGHT=${inputs.viewport.logical[1]}`,
     `-DPOCKET_RASTER_DENSITY=${inputs.viewport.rasterDensity}`,
@@ -755,6 +783,7 @@ async function build(): Promise<void> {
   ]);
   compile(join(REPOSITORY, "engine/quickjs-c/pocket_runtime.c"), pocketRuntimeObject, [
     ...warnings,
+    ...guestRuntimeDefines(plan.features),
     ...svcWireDefines,
     ...offloadDefines,
     ...(APP.nativeCore ? ["-DPOCKET_RUNTIME_EXTENSION", "-I", join(REPOSITORY, "hosts/nokia-e7/runtime")] : []),

@@ -23,6 +23,7 @@ import {
 import { IPHONE4S_TOOLCHAIN } from "../tools/iphone4s-toolchain.ts";
 import {
   buildReceiptsMatch,
+  guestRuntimeDefines,
   IPODTOUCH4_APPS,
   selectIPodTouch4App,
 } from "../tools/ipodtouch4.ts";
@@ -42,10 +43,11 @@ describe("private iPod touch 4 profile", () => {
         presentations: ["native"],
         rasterDensity: IPODTOUCH4_RASTER_DENSITY,
       },
-      capabilities: ["input.touch", "text.glyphs.baked", "io.offload"],
+      capabilities: ["input.touch", "text.glyphs.baked", "io.offload", "ui.physics"],
     });
-    // Same legacy UIKit runtime, same op table, same guest protocol as the
-    // iPhone 4S — the ABI is the protocol revision, the target id the device.
+    // Same legacy UIKit runtime, same base op table, same guest protocol as
+    // the iPhone 4S — the ABI is the protocol revision, the target id the
+    // device; optional families (io.offload, ui.physics) follow the plan.
     expect(IPODTOUCH4_DEV_HOST_ABI).toBe(IPHONE4S_DEV_HOST_ABI);
   });
 
@@ -64,6 +66,27 @@ describe("private iPod touch 4 profile", () => {
     expect(plan.app.output).toBe("clear-main");
     expect(plan.app.framework).toBe("vue-vapor");
     expect(verifyPlanHash(plan)).toBe(true);
+  });
+
+  test("resolves Pocket Nexus and binds the physics ops it requires", () => {
+    const manifest = JSON.parse(readFileSync(join(repository, "apps/nexus-touch/pocket.json"), "utf8"));
+    const plan = resolveIPodTouch4BuildPlan(manifest);
+    expect(plan.app.entry).toBe("apps/nexus-touch/main.tsx");
+    expect(plan.app.output).toBe("nexus-touch-main");
+    expect(plan.app.framework).toBe("solid");
+    expect(plan.viewport.logical).toEqual(IPODTOUCH4_LOGICAL_VIEWPORT);
+    expect(plan.viewport.rasterDensity).toBe(IPODTOUCH4_RASTER_DENSITY);
+    expect(plan.features).toEqual({ "input.touch": true, "ui.physics": true });
+    // a second installable app: every device-side name differs from Clear's
+    const nexus = selectIPodTouch4App("nexus-touch");
+    const clear = IPODTOUCH4_APPS.clear;
+    for (const key of ["bundleId", "bundleName", "executable", "scheme", "receiptSlug", "actionName"] as const) {
+      expect(nexus[key]).not.toBe(clear[key]);
+    }
+    // the guest runtime binds ops 52..56 for this plan only; Clear keeps its op table
+    expect(guestRuntimeDefines(plan.features)).toEqual(["-DPOCKET_PHYSICS"]);
+    const clearPlan = resolveIPodTouch4BuildPlan(JSON.parse(readFileSync(join(repository, "apps/clear/pocket.json"), "utf8")));
+    expect(guestRuntimeDefines(clearPlan.features)).toEqual([]);
   });
 
   test("resolves an external landscape app with independent device identity", () => {
@@ -179,6 +202,9 @@ describe("private iPod touch 4 profile", () => {
     expect(runtime).toContain('send_void_bool(g_view, "setMultipleTouchEnabled:", YES)');
     expect(runtime).toContain("pocket_runtime_frame_contacts(&frame_input, POCKET_FRAME_TICKS)");
     expect(runtime).toContain("#define POCKET_FRAME_TICKS 2");
+    // the shared default serves the 30 Hz original iPhone; the iPod's display
+    // link runs at the guest clock's 60 Hz, so it advances one tick per frame
+    expect(wrapper).toContain("#define POCKET_FRAME_TICKS 1");
     expect(runtime).toContain("pocket_runtime_hit_test_bounds");
     expect(guest).toContain("POCKET_RUNTIME_MAX_CONTACTS");
     expect(guest).toContain("pocket_runtime_pack_contact(contact)");

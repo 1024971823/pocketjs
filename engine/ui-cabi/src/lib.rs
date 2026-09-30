@@ -268,6 +268,7 @@ pub extern "C" fn ui_shutdown() {
     }
     unsafe {
         UI = None;
+        *core::ptr::addr_of_mut!(PHYSICS_EVENTS) = Vec::new();
     }
     clear_framebuffer();
 }
@@ -354,6 +355,47 @@ pub extern "C" fn ui_set_prop_batch(ptr: *const u8, len: usize) {
             read_f64_le(record, 16),
         );
     }
+}
+
+// ---- physics (spec ops 52..56, ui.physics; contracts/spec/physics.ts) ------
+
+/// Drained physics events in their wire bytes; valid until the next drain or
+/// `ui_shutdown`.
+static mut PHYSICS_EVENTS: Vec<u8> = Vec::new();
+
+/// Create a world, body, collider, zone or emitter from its wire record;
+/// returns its handle, or 0 when the record is refused.
+#[no_mangle]
+pub extern "C" fn ui_physics_create(kind: u32, ptr: *const u8, len: usize) -> i32 {
+    ui().physics_create_wire(kind, unsafe { bytes(ptr, len) })
+}
+
+/// Apply a command stream in its wire bytes.
+#[no_mangle]
+pub extern "C" fn ui_physics_apply(ptr: *const u8, len: usize) {
+    ui().physics_apply_wire(unsafe { bytes(ptr, len) });
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_destroy(handle: i32) {
+    ui().physics_destroy(handle);
+}
+
+/// Drain pending events; returns the byte pointer and stores the byte length
+/// (0 when there are none).
+#[no_mangle]
+pub extern "C" fn ui_physics_take_events(length: *mut usize) -> *const u8 {
+    let events = unsafe { &mut *core::ptr::addr_of_mut!(PHYSICS_EVENTS) };
+    ui().physics_take_events_wire(events);
+    if !length.is_null() {
+        unsafe { *length = events.len() };
+    }
+    events.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn ui_physics_query(query: u32, handle: i32, a: f64, b: f64, c: f64, d: f64) -> f64 {
+    ui().physics_query(query, handle, a, b, c, d)
 }
 
 #[no_mangle]
