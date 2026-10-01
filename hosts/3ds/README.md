@@ -31,6 +31,9 @@ src/runtime.c         .pocket admission, immutable storage, active/rollback stat
 src/devserver.c       discovery, paired TCP pump, uploads, screenshots, receipts
 src/dev_protocol.c    byte-order-safe development wire encoding and admission
 src/devmenu.c         Runtime-owned bottom-screen development menu
+src/native.c          .3dsx staging, verification and swap for the dev connection
+src/hbldr.c           Luma3DS hb:ldr requests that start a .3dsx on exit
+src/error_text.h      the shared fixed-buffer error formatter
 src/gfx.c             the DrawList -> citro3d walker
 src/qjs.c             QuickJS embedding: globalThis.ui -> ui_* calls
 src/input.c           3DS keys and circle pad -> the PSP BTN bitmask
@@ -110,6 +113,16 @@ loads the previous active package, then last-good, then the embedded ROMFS
 recovery package. Power loss before the generation marker leaves the previous
 generation active.
 
+**A newly installed `.3dsx` boots the guest it embeds.** The slot records the
+embedded package's hash in `embedded.txt`. A start that finds a different hash
+boots the embedded guest in place of the active package; once its first frame
+retires it is the active generation and the package it replaced is last-good.
+If that guest fails, the active package and then last-good are tried before
+the failure is fatal. A push made before the install cannot shadow it, and a
+push made after it is kept across restarts. Reinstalling an unchanged `.3dsx`
+leaves the hash unchanged and keeps the push; `install` (below) then pushes
+the embedded guest. A `pending.pocket` is admitted before this check.
+
 `L+R+X` requests the same package check at a GPU-idle frame boundary. The full
 chord is removed from the application's button mask. This supports an emulator
 or direct SD writer; a separate 3DS ftpd cannot run concurrently with Pocket
@@ -170,17 +183,22 @@ accepted.
 
 **The key authenticates a client but does not encrypt the TCP stream.** Use the
 listener on a trusted LAN, and pass `--rotate` to `pair` after a key is exposed.
+**The key authorizes native code: a paired client writes and starts any
+`.3dsx` under `sdmc:/3ds/`.** Frames after the hello carry no MAC, so a host
+that can inject into the TCP session can do the same.
 
 After pairing, ftpd is not part of the development loop:
 
 ```sh
 bun run 3ds:dev discover
-bun run 3ds:dev push  --app 3ds-demo
+bun run 3ds:dev push    --app 3ds-demo
+bun run 3ds:dev install --app 3ds-demo
 bun run 3ds:dev probe
-bun run 3ds:dev dev   --app 3ds-demo
+bun run 3ds:dev dev     --app 3ds-demo
 ```
 
-**`discover`, `push`, `probe`, and `dev` do not require the 3DS IP.** The
+**`discover`, `push`, `install`, `launch`, `probe`, and `dev` do not require the 3DS IP**
+(`install --ftp` does). The
 Runtime answers one fixed-size UDP discovery request with its target, ABI,
 TCP port, generation, active hash, and a stable ID derived from the pairing
 key. The reply never contains the key. The desktop tool matches that ID to a
@@ -201,7 +219,8 @@ bulk screenshot traffic cannot discard the heartbeat response.
 device's **accepted-after-retired-frame** receipt. `probe` requests runtime
 status, native counters, the component tree, a live REPL evaluation, a console
 message, and a combined top/bottom PNG. `dev` keeps the DevTools panel attached;
-`r` rebuilds and pushes, `s` captures both screens, and `o` opens the panel.
+`r` rebuilds and pushes, `i` installs the `.3dsx` and restarts into it, `s`
+captures both screens, and `o` opens the panel.
 
 **`devStats` carries `timingUs`: the mean and maximum microseconds of each
 frame phase over the last complete 60-frame window** — guest JS, core tick
@@ -218,12 +237,56 @@ enters QuickJS or the application's capability surface. Uploads stream to
 GPU-idle cold-swap, acceptance, and rollback path remains the only route to an
 active guest.
 
-**The connection updates the guest `.pocket`, not the running `.3dsx` or CIA
-host binary.** A native host or ABI change still requires deploying a new
-`.3dsx`/CIA and restarting it; the embedded `.pocket` remains its final recovery
-guest. Keeping that boundary lets ordinary app, asset and resolved-plan changes
-use the in-process loop without letting a guest replace the process that admits
-and rolls it back.
+**A push replaces the guest `.pocket`, never the process that admits it.** A
+native host or ABI change needs a new `.3dsx`, which the same connection writes
+as a file for the next start (below); the embedded `.pocket` remains its final
+recovery guest. Keeping that boundary lets ordinary app, asset and
+resolved-plan changes use the in-process loop without letting a guest replace
+the process that admits and rolls it back.
+
+### Installing and launching `.3dsx` files
+
+```sh
+bun run 3ds:dev install --app 3ds-demo               # build, install, restart into it
+bun run 3ds:dev install --file app.3dsx --no-launch  # install for the next start
+bun run 3ds:dev launch pocket3ds-demo-main.3dsx      # start a .3dsx already on the card
+```
+
+**`install` streams a `.3dsx` to `sdmc:/3ds/<name>` over the paired
+connection, so ftpd is needed once, for pairing.** The Runtime writes
+`sdmc:/pocketjs/runtime/native-upload.3dsx`, checks the declared length (32
+bytes to 32 MiB), CRC-32 and `3DSX` magic, moves the file it replaces to
+`native-previous.3dsx`, and renames the upload into place. A name is 6..64
+bytes of `[A-Za-z0-9._-]` ending in `.3dsx`: one file directly under
+`sdmc:/3ds/`, never a path. `src/dev_protocol.c` holds the wire and name
+rules; `src/native.c` holds the file steps and compiles on the host for
+`tests/3ds-native-install.test.ts`.
+
+**A transfer that replaces the running `.3dsx` moves to
+`native-deferred.3dsx` and is renamed into place after `romfsExit()`**, on a
+normal exit or a fatal error: libctru reads the ROMFS of a running `.3dsx`
+from that file. Later transfers and aborts do not touch the deferred file.
+
+**To restart, `src/hbldr.c` sends Luma3DS's `hb:ldr` port SetTarget (the path
+without `sdmc:`) and SetArgv (`argv[0]` = the path), and the main loop
+ends.** These are the two requests `3ds-hbmenu` sends when it starts an entry;
+the loader starts the target as the process exits. Outside the Homebrew
+Launcher (a CIA, or Azahar loading the `.3dsx`) the request fails, the file
+stays installed, and the receipt says so. `launch` sends the same request for
+a `.3dsx` already under `sdmc:/3ds/`.
+
+After a restart the tool rediscovers the device under its pairing ID and
+reads the running package hash. When the build's `.pocket` is known and an
+older push is running, it pushes the embedded guest. A `.3dsx` that is not a
+PocketJS dev build does not answer, which `install` reports and accepts. The
+tool stops streaming at the first `transfer-error` and times its waits from
+the end of the transfer. Receipts are `runtime.native` control records with a
+bare `name` and its `path`: `receiving`, `installed`, `staged`, `launching`,
+`rejected`, `transfer-error` and `launch-error`. **The handshake ack sets flag
+`2` on a Runtime that accepts these messages**; for an older one, `install
+--ftp --host <device-ip>` copies the file through ftpd instead. In `dev`, `i`
+builds, installs, restarts and settles the guest over the reconnected
+session.
 
 Two build-time facts are load-bearing:
 

@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dev_protocol.h"
 #include "runtime.h"
 
 typedef enum {
@@ -65,6 +66,16 @@ void devserver_report_install(
   const char *message
 );
 void devserver_report_log(const char *level, const char *message);
+
+/* .3dsx files (src/native.c). An install or a LAUNCH message that asks to
+ * start a .3dsx leaves its bare file name here; the caller hands
+ * sdmc:/3ds/<name> to hb:ldr and exits its loop. Receipts are
+ * {"t":"runtime.native","phase","name","path","message"} control records,
+ * name bare and path sdmc:/3ds/<name> (both empty when the name is unknown). */
+bool devserver_take_launch(char name[POCKET_RUNTIME_NATIVE_NAME_BYTES + 1]);
+void devserver_report_native(const char *phase, const char *name, const char *message);
+/* Send what is queued before the process exits, for at most timeout_ms. */
+void devserver_flush(uint32_t timeout_ms);
 
 /* Current runtime facts are cached for connect/status/debugStats receipts. */
 void devserver_set_runtime(

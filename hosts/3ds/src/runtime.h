@@ -36,15 +36,25 @@ typedef struct {
 
 /* One recovery episode can reject a staged candidate, the active package and
  * last-good before selecting the embedded package (hash 0). Keep that lineage
- * in memory until a recovered guest retires its first frame. */
+ * in memory until a recovered guest retires its first frame. The embedded
+ * package is the last resort, except on the start after an install, which
+ * tries it first (runtime_note_embedded). */
 #define POCKET_RUNTIME_FAILURE_CAPACITY 3
 typedef struct {
   uint64_t hashes[POCKET_RUNTIME_FAILURE_CAPACITY];
   size_t count;
+  bool embedded_failed;
 } PocketRuntimeFailureLineage;
 
 void runtime_failure_lineage_reset(PocketRuntimeFailureLineage *lineage);
 bool runtime_failure_lineage_add(PocketRuntimeFailureLineage *lineage, uint64_t hash);
+/* Record that the package `hash` (0: embedded) failed. Returns false when no
+ * untried package remains, so the failure is fatal. */
+bool runtime_failure_lineage_reject(
+  PocketRuntimeFailureLineage *lineage,
+  const PocketRuntimeState *state,
+  uint64_t hash
+);
 /* Return the next non-failed stored package, or 0 for embedded ROMFS. */
 uint64_t runtime_recovery_hash(
   const PocketRuntimeState *state,
@@ -93,6 +103,15 @@ RuntimePendingResult runtime_prepare_file(
   char *error,
   size_t error_length
 );
+
+/*
+ * The slot records the embedded package it last booted beside
+ * (embedded.txt). Returns true, and records the new hash, when this .3dsx
+ * embeds a different package: it was installed since, and its guest boots in
+ * place of the active package once, so a pushed guest never shadows an
+ * install. A missing record counts as a change.
+ */
+bool runtime_note_embedded(uint64_t embedded_hash);
 
 /* Append one power-loss-safe state generation after a guest frame is accepted. */
 bool runtime_commit(
