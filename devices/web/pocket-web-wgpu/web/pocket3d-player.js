@@ -10,6 +10,8 @@
 //     title: "My Game",
 //     tagline: "One sentence about it.",
 //     devices: [{ id: "vita", label: "PS Vita", note: "…" }, …],   // ids of ./shells/profiles.js
+//                                                                  // (`mark`: the trademark in a label that is more than one,
+//                                                                  //  { id: "android", label: "Android phone", mark: "Android" })
 //     runsOn: ["psp", "vita", "3ds", "ipod-touch", "android"],     // what the game has packages for
 //     withoutPackages: { heading: "…", sentence: "…" },            // the dock's words when a visitor can get none
 //     about: "This is the Pocket3D web player.",                   // what the About panel says this player is
@@ -213,6 +215,8 @@ async function readApp() {
 /**
  * Builds the player in `root` (the page's body) and returns it. `devices` are `{ id, label, note }`: `id`
  * names a shell, `note` is the game's sentence on how its picture on that device differs from this one.
+ * A device whose label is more than a trademark says which word is one (`mark`: "Android" for an
+ * "Android phone"); About names that word among the marks.
  * `runsOn` are the targets the game has packages for, as Pocket Studio names them, for a host that lists
  * none. `withoutPackages` (`{ heading, sentence }`) are the dock's words when a visitor can get no package.
  * `about` is the first sentence of the About panel: what this player is. `pick(id)` is called when another
@@ -300,11 +304,12 @@ export function createPlayer({ root = document.body, title, tagline = "", device
       ...(keys.length && fingers ? [make("p", { text: "The buttons and sticks on the picture are the controls: press them with a finger." })] : []),
       ...(touch ? [make("p", { text: touch })] : []),
     );
-    const marks = [...new Set(devices.map((d) => d.label))];
+    const marks = [...new Set(devices.map((d) => d.mark ?? d.label))];
     aboutPanel.replaceChildren(
       make("h2", { text: "About this player" }),
       make("p", { text: `${about} The game is drawn in your browser; the handheld around it is a picture.` }),
-      make("p", { text: `${listed(marks)} are trademarks of their owners. Pocket Nexus is not affiliated with them.` }),
+      // One device's name is one mark: "Android is a trademark of its owner."
+      make("p", { text: marks.length === 1 ? `${marks[0]} is a trademark of its owner. Pocket Nexus is not affiliated with it.` : `${listed(marks)} are trademarks of their owners. Pocket Nexus is not affiliated with them.` }),
       make("p", {}, "The PSP is rendered from a model by ", make("a", { href: "https://sketchfab.com/3d-models/playstation-portable-psp-eg02-b76c7f9158204a39929a9c97d0b813d0", target: "_blank", rel: "noopener", text: "Dibad" }), ", used under ", make("a", { href: "https://creativecommons.org/licenses/by/4.0/", target: "_blank", rel: "noopener", text: "CC BY 4.0" }), ", with its marks taken off."),
     );
   };
