@@ -21,7 +21,7 @@ Firmware how-to (build, flash, onboard use, PC companion): see overlay docs unde
 | Field | Value |
 | --- | --- |
 | `id` | `edgitalk-m55` |
-| `platform` | `"esp-idf"` (P0 borrow of `pocket-idf-host-1`; **do not change in P0** — track a real RT-Thread host id/schema for P1) |
+| `platform` | `"esp-idf"` (borrow of `pocket-idf-host-1`; keep until real schema — tracking [#2](https://github.com/1024971823/pocketjs/issues/2); see [`HOST_PROFILE.md`](HOST_PROFILE.md)) |
 | `form` | `takeover` |
 | `tickHz` | `30` |
 | display | physical 800×480, logical 400×240, density 2, native |
