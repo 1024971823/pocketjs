@@ -7,24 +7,32 @@ This directory mirrors the intent of [`hosts/esp-idf`](../esp-idf): product
 firmware owns tasks, input, display, and storage. PocketJS is integrated as the
 UI runtime, not as a vendored board support package.
 
-## Status (P1)
+## Status (P2)
 
 - **Reuses** the ESP-IDF host C components under
-  `hosts/esp-idf/components/{package,guest,ui_*,render_rgb565}` (listed by
-  [`native/SConscript`](native/SConscript)).
-- **Rust** UI / render crates rebuild for M55 (`thumbv8m.main-none-eabihf`).
+  `hosts/esp-idf/components/{package,guest,ui_*,render_rgb565}` — see
+  [`components/README.md`](components/README.md) (do not fork C sources).
+- **Rust** UI / render crates rebuild for M55 (`thumbv8m.main-none-eabihf`) via
+  `bun tools/rt-thread-edgitalk-native.ts` + [`native/toolchains.json`](native/toolchains.json).
   HyperRAM ≈ SPIRAM via [`native/pocketjs_rt_compat.c`](native/pocketjs_rt_compat.c).
 - **Native glue** under [`native/`](native/): ESP→RT shims, QuickJS compat,
   portable host loop with **board hooks** (`pocketjs_host_board.h`), embed
-  pattern, SCons fragment.
+  pattern, SCons fragment, receipts schema.
+- **Contracts skeleton:** `contracts/spec/rtt-edgitalk-native.ts` +
+  `bun tools/rt-thread-edgitalk-contracts.ts` (shared IDF check + honest
+  “not yet enforced” for RTT-only surfaces).
 - **App** SoT: [`apps/edgitalk-m55-smoke/`](../../apps/edgitalk-m55-smoke/).
 - **Product owns** LCD, touch, Wi-Fi, and BT (same philosophy as the ESP host).
+  Product `__edgi` stays outside PocketJS core.
+- **Optional** headless smoke outline: [`examples/smoke/`](examples/smoke/)
+  (board-CI later; not runnable without RT-Thread BSP).
 
 ### Host identity (`platform: "esp-idf"`)
 
 `apps/edgitalk-m55-smoke/pocket.host.json` still declares `platform: "esp-idf"`
 and the `pocket-idf-host-1` schema so CLI admission works. That is an intentional
-borrow, **not** a claim the firmware is ESP-IDF.
+borrow, **not** a claim the firmware is ESP-IDF. The Pocket CLI does not yet
+register `platform: "rt-thread"`.
 
 Tracking: **[#2 — replace platform esp-idf with rt-thread / pocket-rtt-host-1](https://github.com/1024971823/pocketjs/issues/2)**.
 Do not invent a fake schema URL; keep `platform: "esp-idf"` until a real schema
@@ -33,8 +41,10 @@ exists. See also [`apps/edgitalk-m55-smoke/HOST_PROFILE.md`](../../apps/edgitalk
 ## What lives here
 
 - Integration notes for the RT-Thread / Edgi-Talk host.
-- Native glue under [`native/`](native/) (shims, host loop, SCons).
+- Native glue under [`native/`](native/) (shims, host loop, SCons, toolchains).
+- Component sharing policy under [`components/`](components/).
 - Portable build notes in [`docs/build.md`](docs/build.md).
+- Headless smoke outline under [`examples/smoke/`](examples/smoke/).
 
 ## What does not live here
 
@@ -46,8 +56,19 @@ BSP patches and Bluetooth firmware are not vendored in this repository. They sta
   (compile / flash / onboard use).
 - The RT-Thread BSP for Edgi-Talk / PSoC E84.
 
+## Quick commands
+
+```sh
+bun tools/pocket.ts build \
+  --host-profile apps/edgitalk-m55-smoke/pocket.host.json \
+  --manifest apps/edgitalk-m55-smoke/pocket.json
+
+bun tools/rt-thread-edgitalk-native.ts --help
+bun tools/rt-thread-edgitalk-contracts.ts --list
+```
+
 ## Upstream
 
 This fork tracks [pocket-nexus/pocketjs](https://github.com/pocket-nexus/pocketjs).
 Edgi-Talk host work stays on `host/rt-thread-edgitalk` until it is ready to
-propose upstream.
+propose upstream (P3).

@@ -30,27 +30,65 @@ bun tools/pocket.ts build \
 Output: `apps/edgitalk-m55-smoke/dist/edgitalk-m55-smoke.pocket`.
 
 `pocket.host.json` still uses `platform: "esp-idf"` (borrow of `pocket-idf-host-1`).
-Tracking for a real RT-Thread host id/schema:
+The Pocket CLI does **not** yet register `platform: "rt-thread"`. Tracking:
 https://github.com/1024971823/pocketjs/issues/2 — see
-[`../HOST_PROFILE.md`](../../../apps/edgitalk-m55-smoke/HOST_PROFILE.md).
+[`HOST_PROFILE.md`](../../../apps/edgitalk-m55-smoke/HOST_PROFILE.md).
 
 Rebuild the package after UI / chart / asset changes before flashing.
 
-## 2. Rust static libs (optional)
+Admission path is the same as ESP: host profile → package `PHST` / HostOps checks
+at `pocketjs_package_select`. Product `__edgi` (dashboard / music / game natives)
+stays outside PocketJS core — installed by the overlay on the guest `JSContext`,
+same pattern as ESP product extensions.
 
-Only needed when changing `hosts/esp-idf/native/` (ui-core / render-rgb565). The
-M55 port rebuilds these for `thumbv8m.main-none-eabihf`:
+## 2. Rust static libs (M55 native script)
+
+Only needed when changing `hosts/esp-idf/native/` (ui-core / render-rgb565). Prefer
+the host build script (receipt + toolchain json):
 
 ```sh
-rustup target add thumbv8m.main-none-eabihf
-(cd hosts/esp-idf/native/ui-core && cargo build --release --target thumbv8m.main-none-eabihf)
-(cd hosts/esp-idf/native/render-rgb565 && cargo build --release --target thumbv8m.main-none-eabihf)
+# Help / planned commands (no rustc required for --help / --dry-run after prereq skip)
+bun tools/rt-thread-edgitalk-native.ts --help
+bun tools/rt-thread-edgitalk-native.ts --check-prereqs
+bun tools/rt-thread-edgitalk-native.ts --dry-run
+
+# Real build (requires cargo + thumbv8m.main-none-eabihf)
+rustup target add thumbv8m.main-none-eabihf   # if using rustup
+bun tools/rt-thread-edgitalk-native.ts
+# optional: --component ui-core|render-rgb565
+```
+
+Toolchain receipt: [`../native/toolchains.json`](../native/toolchains.json).
+Build receipts: [`../native/receipts/`](../native/receipts/) (example schema
+committed; digests gitignored).
+
+Manual equivalent (if you skip the script):
+
+```sh
+(cd hosts/esp-idf/native/ui-core && cargo build --release --locked --no-default-features --target thumbv8m.main-none-eabihf)
+(cd hosts/esp-idf/native/render-rgb565 && cargo build --release --locked --no-default-features --target thumbv8m.main-none-eabihf)
 ```
 
 `native/SConscript` adds those `release/` dirs to `LIBPATH` and links
 `pocketjs_idf_ui_core` + `pocketjs_idf_render_rgb565`.
 
-## 3. Include the host SCons fragment from the product project
+## 3. Shared ESP components (do not fork C)
+
+Prefer **sharing** `hosts/esp-idf/components/{package,guest,ui_core,ui_qjs,render_rgb565}`
+via the existing SConscript — see [`../components/README.md`](../components/README.md).
+
+## 4. Contracts (honest)
+
+```sh
+bun tools/rt-thread-edgitalk-contracts.ts --list
+bun tools/rt-thread-edgitalk-contracts.ts --check
+```
+
+`--check` reuses the ESP-IDF generated-contract verification for **shared**
+headers/crates, then prints RTT-only items as **not yet enforced** (no fake pass).
+Spec notes: `contracts/spec/rtt-edgitalk-native.ts`.
+
+## 5. Include the host SCons fragment from the product project
 
 Point the product build at this monorepo (`POCKETJS_ROOT`), then include:
 
@@ -73,9 +111,16 @@ synth / music / dashboard, BT firmware `btfw.c`, and product-generated package
 blobs. See [`../native/README.md`](../native/README.md).
 
 Env overrides: `POCKETJS_QUICKJS_ROOT`, `POCKETJS_SMOKE_PACKAGE`,
-`POCKETJS_DEBUG_TOUCH=1`.
+`POCKETJS_DEBUG_TOUCH=1`, `POCKETJS_NATIVE_HOST_LOOP=0`,
+`POCKETJS_NATIVE_PACKAGE_STUB=0`.
 
-## 4. Firmware + flash
+## 6. Optional headless smoke outline
+
+[`../examples/smoke/`](../examples/smoke/) is a **source outline + README** for a
+RAM-framebuffer / fake-present smoke (board-CI later). It does not run on a plain
+Linux host without the RT-Thread BSP.
+
+## 7. Firmware + flash
 
 Do **not** copy absolute machine paths here. Follow the overlay docs:
 

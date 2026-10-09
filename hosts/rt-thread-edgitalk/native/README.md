@@ -54,6 +54,25 @@ Optional env: `POCKETJS_QUICKJS_ROOT`, `POCKETJS_SMOKE_PACKAGE`,
 `pocketjs_host_loop.c` when product still builds `pocketjs_app.c`),
 `POCKETJS_NATIVE_PACKAGE_STUB=0` (omit zero-size stub when product embeds). See [`../docs/build.md`](../docs/build.md).
 
+## Native Rust build (P2)
+
+| Path | Role |
+| --- | --- |
+| `toolchains.json` | Declares `edgitalk-m55` → `thumbv8m.main-none-eabihf` |
+| `receipts/` | Build receipt schema + example (digests gitignored) |
+| `../../../../tools/rt-thread-edgitalk-native.ts` | Build ui-core + render-rgb565 + write receipts |
+| `../../../../tools/rt-thread-edgitalk-contracts.ts` | Shared IDF ABI check + honest RTT TODOs |
+| `../../../../contracts/spec/rtt-edgitalk-native.ts` | Lockstep inventory vs `idf-native.ts` |
+
+```sh
+bun tools/rt-thread-edgitalk-native.ts --check-prereqs
+bun tools/rt-thread-edgitalk-native.ts --dry-run
+bun tools/rt-thread-edgitalk-native.ts   # real cargo build when target available
+```
+
+Shared C components stay under `hosts/esp-idf/components/` — see
+[`../components/README.md`](../components/README.md).
+
 ## Remaining extraction
 
 - Overlay `pocketjs_app.c` still contains a full board-entangled copy of the
