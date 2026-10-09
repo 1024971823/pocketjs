@@ -133,3 +133,12 @@ Typical flow:
 1. Build `.pocket` as above from pocketjs.
 2. Run the overlay firmware build for `Edgi_Talk_M55_PocketJS` (embeds the package).
 3. Flash M55 with the KitProg3 script (`M55_PROJECT=Edgi_Talk_M55_PocketJS`).
+
+## Upstream proposal (P3)
+
+Honest prep for a future pocket-nexus discussion — **not** an opened upstream PR:
+
+- [`upstream-proposal.md`](upstream-proposal.md) — what Edgi runs, in/out of scope, asks (native target, Registry policy, docs, `pocket-rtt-host-1`, OSAL)
+- [`upstream-pr-body.md`](upstream-pr-body.md) — ready-to-paste draft body for a **future** PR to pocket-nexus
+
+Fork tracking: [PR #1](https://github.com/1024971823/pocketjs/pull/1), [issue #2](https://github.com/1024971823/pocketjs/issues/2).

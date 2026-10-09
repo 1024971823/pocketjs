@@ -7,7 +7,7 @@ This directory mirrors the intent of [`hosts/esp-idf`](../esp-idf): product
 firmware owns tasks, input, display, and storage. PocketJS is integrated as the
 UI runtime, not as a vendored board support package.
 
-## Status (P2)
+## Status (P0–P2 landed; P3 = upstream prep)
 
 - **Reuses** the ESP-IDF host C components under
   `hosts/esp-idf/components/{package,guest,ui_*,render_rgb565}` — see
@@ -44,6 +44,7 @@ exists. See also [`apps/edgitalk-m55-smoke/HOST_PROFILE.md`](../../apps/edgitalk
 - Native glue under [`native/`](native/) (shims, host loop, SCons, toolchains).
 - Component sharing policy under [`components/`](components/).
 - Portable build notes in [`docs/build.md`](docs/build.md).
+- Upstream proposal + draft PR body in [`docs/upstream-proposal.md`](docs/upstream-proposal.md) / [`docs/upstream-pr-body.md`](docs/upstream-pr-body.md).
 - Headless smoke outline under [`examples/smoke/`](examples/smoke/).
 
 ## What does not live here
@@ -67,8 +68,15 @@ bun tools/rt-thread-edgitalk-native.ts --help
 bun tools/rt-thread-edgitalk-contracts.ts --list
 ```
 
-## Upstream
+## Upstream (P3 draft)
 
 This fork tracks [pocket-nexus/pocketjs](https://github.com/pocket-nexus/pocketjs).
-Edgi-Talk host work stays on `host/rt-thread-edgitalk` until it is ready to
-propose upstream (P3).
+Edgi-Talk host work stays on `host/rt-thread-edgitalk` until pocket-nexus accepts
+an RT-Thread / M55 target.
+
+- **Proposal (read this first):** [`docs/upstream-proposal.md`](docs/upstream-proposal.md)
+- **Ready-to-paste upstream PR body (not opened):** [`docs/upstream-pr-body.md`](docs/upstream-pr-body.md)
+- Fork PR #1: https://github.com/1024971823/pocketjs/pull/1
+- Host identity: [#2](https://github.com/1024971823/pocketjs/issues/2)
+
+**No PR has been opened against pocket-nexus** from this work; P3 is honest prep only.
