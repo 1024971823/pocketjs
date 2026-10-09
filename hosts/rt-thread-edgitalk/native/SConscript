@@ -31,19 +31,28 @@ renderer_rust_lib_dir = os.path.join(
     repo_root,
     'hosts/esp-idf/native/render-rgb565/target/thumbv8m.main-none-eabihf/release')
 
+# Set POCKETJS_NATIVE_HOST_LOOP=0 when the product still compiles its own
+# pocketjs_app.c (avoids duplicate pocketjs_app_start) but wants shared
+# shims + IDF components + QuickJS from this tree.
+_include_host_loop = os.environ.get('POCKETJS_NATIVE_HOST_LOOP', '1') != '0'
+
 host_src = [
-    os.path.join(cwd, 'pocketjs_host_loop.c'),
     os.path.join(cwd, 'pocketjs_rt_compat.c'),
     os.path.join(cwd, 'quickjs_compat.c'),
-    # Optional stub / regenerated embed — product may replace with its own
-    # generated/*.c + *_blob.S (see generated/README.md).
-    os.path.join(cwd, 'generated/pocketjs_package_stub.c'),
     os.path.join(idf_root, 'pocketjs_guest/src/guest.c'),
     os.path.join(idf_root, 'pocketjs_package/src/package.c'),
     os.path.join(idf_root, 'pocketjs_ui_qjs/src/ui_qjs.c'),
     os.path.join(idf_root, 'pocketjs_ui_core/src/ui_core.c'),
     os.path.join(idf_root, 'pocketjs_render_rgb565/src/render_rgb565.c'),
 ]
+if _include_host_loop:
+    host_src.insert(0, os.path.join(cwd, 'pocketjs_host_loop.c'))
+
+# Optional stub embed (default on). Product trees with their own generated
+# package should set POCKETJS_NATIVE_PACKAGE_STUB=0.
+if os.environ.get('POCKETJS_NATIVE_PACKAGE_STUB', '1') != '0':
+    host_src.append(os.path.join(cwd, 'generated/pocketjs_package_stub.c'))
+
 
 # Product-generated blob (optional). When present, prefer it over the stub.
 _blob = os.path.join(cwd, 'generated/pocketjs_package_edgitalk_smoke_blob.S')

@@ -50,7 +50,9 @@ SConscript(pocketjs_native)
 ```
 
 Optional env: `POCKETJS_QUICKJS_ROOT`, `POCKETJS_SMOKE_PACKAGE`,
-`POCKETJS_DEBUG_TOUCH=1`. See [`../docs/build.md`](../docs/build.md).
+`POCKETJS_DEBUG_TOUCH=1`, `POCKETJS_NATIVE_HOST_LOOP=0` (omit
+`pocketjs_host_loop.c` when product still builds `pocketjs_app.c`),
+`POCKETJS_NATIVE_PACKAGE_STUB=0` (omit zero-size stub when product embeds). See [`../docs/build.md`](../docs/build.md).
 
 ## Remaining extraction
 
